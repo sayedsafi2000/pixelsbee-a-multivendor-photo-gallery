@@ -3,6 +3,29 @@ import { getUserById, findUserByEmail } from '../models/userModel.js';
 import { listProductsByVendor } from '../models/productModel.js';
 import pool from '../config/db.js';
 
+// Password validation function
+const validatePassword = (password) => {
+  const minLength = 8;
+  const hasCapital = /[A-Z]/.test(password);
+  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
+  const hasNumber = /[0-9]/.test(password);
+  
+  if (password.length < minLength) {
+    return { isValid: false, message: 'Password must be at least 8 characters long' };
+  }
+  if (!hasCapital) {
+    return { isValid: false, message: 'Password must contain at least one capital letter' };
+  }
+  if (!hasSpecial) {
+    return { isValid: false, message: 'Password must contain at least one special character' };
+  }
+  if (!hasNumber) {
+    return { isValid: false, message: 'Password must contain at least one number' };
+  }
+  
+  return { isValid: true };
+};
+
 export const getProfile = async (req, res) => {
   const user = await getUserById(req.user.id);
   res.json({ id: user.id, name: user.name, email: user.email, role: user.role, profile_pic_url: user.profile_pic_url });
@@ -21,11 +44,18 @@ export const updateProfile = async (req, res) => {
 export const changePassword = async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!oldPassword || !newPassword) return res.status(400).json({ message: 'Both passwords required' });
+  
+  // Validate new password
+  const passwordValidation = validatePassword(newPassword);
+  if (!passwordValidation.isValid) {
+    return res.status(400).json({ message: passwordValidation.message });
+  }
+  
   const user = await getUserById(req.user.id);
   const match = await bcrypt.compare(oldPassword, user.password);
   if (!match) return res.status(401).json({ message: 'Old password incorrect' });
   const hashed = await bcrypt.hash(newPassword, 10);
-  await req.db.query('UPDATE users SET password = ? WHERE id = ?', [hashed, req.user.id]);
+  await pool.query('UPDATE users SET password = ? WHERE id = ?', [hashed, req.user.id]);
   res.json({ message: 'Password changed' });
 };
 
