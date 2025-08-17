@@ -1,6 +1,6 @@
 import express from 'express';
 import { authenticate } from '../middleware/authMiddleware.js';
-import { getUserById, getUserStats, getVendorStats, getPlatformStats, getCart, addToCart, removeFromCart, clearCart } from '../models/userModel.js';
+import { getUserById, getUserStats } from '../models/userModel.js';
 import { updateProfile, changePassword } from '../controllers/vendorController.js';
 import { 
   getFavorites, 
@@ -8,7 +8,8 @@ import {
   removeFavorite, 
   checkFavorite,
   getDownloads,
-  addDownload
+  addDownload,
+  getPurchasedProducts
 } from '../controllers/userController.js';
 
 const router = express.Router();
@@ -37,32 +38,6 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-router.get('/vendor-stats', async (req, res) => {
-  try {
-    if (req.user.role !== 'vendor') {
-      return res.status(403).json({ message: 'Access denied. Vendor role required.' });
-    }
-    const stats = await getVendorStats(req.user.id);
-    res.json(stats);
-  } catch (error) {
-    console.error('Error getting vendor stats:', error);
-    res.status(500).json({ message: 'Failed to fetch vendor stats' });
-  }
-});
-
-router.get('/platform-stats', async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied. Admin role required.' });
-    }
-    const stats = await getPlatformStats();
-    res.json(stats);
-  } catch (error) {
-    console.error('Error getting platform stats:', error);
-    res.status(500).json({ message: 'Failed to fetch platform stats' });
-  }
-});
-
 // Favorites routes
 router.get('/favorites', getFavorites);
 router.post('/favorites', addFavorite);
@@ -73,10 +48,14 @@ router.get('/favorites/:imageId/check', checkFavorite);
 router.get('/downloads', getDownloads);
 router.post('/downloads', addDownload);
 
-// Cart routes
+// Purchased products route
+router.get('/purchased', getPurchasedProducts);
+
+// Cart routes - using the functions from userModel
 router.get('/cart', async (req, res) => {
   try {
-    const cart = await getCart(req.user.id);
+    const { getUserCart } = await import('../models/userModel.js');
+    const cart = await getUserCart(req.user.id);
     res.json(cart);
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch cart' });
@@ -87,6 +66,7 @@ router.post('/cart/add', async (req, res) => {
   const { productId, quantity } = req.body;
   if (!productId) return res.status(400).json({ message: 'Product ID required' });
   try {
+    const { addToCart } = await import('../models/userModel.js');
     await addToCart(req.user.id, productId, quantity || 1);
     res.json({ message: 'Added to cart' });
   } catch (error) {
@@ -98,6 +78,7 @@ router.post('/cart/remove', async (req, res) => {
   const { productId } = req.body;
   if (!productId) return res.status(400).json({ message: 'Product ID required' });
   try {
+    const { removeFromCart } = await import('../models/userModel.js');
     await removeFromCart(req.user.id, productId);
     res.json({ message: 'Removed from cart' });
   } catch (error) {
@@ -107,6 +88,7 @@ router.post('/cart/remove', async (req, res) => {
 
 router.post('/cart/clear', async (req, res) => {
   try {
+    const { clearCart } = await import('../models/userModel.js');
     await clearCart(req.user.id);
     res.json({ message: 'Cart cleared' });
   } catch (error) {

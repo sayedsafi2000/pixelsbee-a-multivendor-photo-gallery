@@ -1,34 +1,80 @@
-import pool from '../config/db.js';
+import mongoose from 'mongoose';
 
-export const createOrder = async ({ user_id, product_id, vendor_id, price, status = 'paid' }) => {
-  const [result] = await pool.query(
-    'INSERT INTO orders (user_id, product_id, vendor_id, price, status) VALUES (?, ?, ?, ?, ?)',
-    [user_id, product_id, vendor_id, price, status]
-  );
-  return { id: result.insertId, user_id, product_id, vendor_id, price, status };
+// Order Schema
+const orderSchema = new mongoose.Schema({
+  user_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  items: [{
+    product_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      required: true
+    },
+    vendor_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      default: 1
+    },
+    price: {
+      type: Number,
+      required: true
+    }
+  }],
+  total: {
+    type: Number,
+    required: true
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'rejected', 'shipped', 'delivered', 'paid', 'failed', 'refunded'],
+    default: 'pending'
+  }
+}, {
+  timestamps: true
+});
+
+orderSchema.index({ user_id: 1 });
+orderSchema.index({ vendor_id: 1 });
+orderSchema.index({ status: 1 });
+
+const Order = mongoose.model('Order', orderSchema);
+
+export const createOrder = async (orderData) => {
+  const order = new Order(orderData);
+  return await order.save();
 };
 
-export const getOrderStats = async () => {
-  const [totalSales] = await pool.query('SELECT COUNT(*) as count FROM orders WHERE status = "paid"');
-  const [totalRevenue] = await pool.query('SELECT SUM(price) as revenue FROM orders WHERE status = "paid"');
-  const [salesByMonth] = await pool.query(`
-    SELECT DATE_FORMAT(created_at, '%Y-%m') as month, COUNT(*) as sales, SUM(price) as revenue
-    FROM orders WHERE status = "paid"
-    GROUP BY month ORDER BY month DESC LIMIT 12
-  `);
-  const [topProducts] = await pool.query(`
-    SELECT p.title, COUNT(*) as sales, SUM(o.price) as revenue
-    FROM orders o
-    JOIN products p ON o.product_id = p.id
-    WHERE o.status = "paid"
-    GROUP BY o.product_id
-    ORDER BY sales DESC
-    LIMIT 5
-  `);
-  return {
-    totalSales: totalSales[0]?.count || 0,
-    totalRevenue: totalRevenue[0]?.revenue || 0,
-    salesByMonth,
-    topProducts
-  };
+export const getOrderById = async (id) => {
+  return await Order.findById(id)
+    .populate('user_id', 'name email')
+    .populate('items.product_id', 'title image_url')
+    .populate('items.vendor_id', 'name email');
 };
+
+export const getOrdersByUser = async (userId) => {
+  return await Order.find({ user_id: userId })
+    .populate('items.product_id', 'title image_url price')
+    .populate('items.vendor_id', 'name email')
+    .sort({ createdAt: -1 });
+};
+
+export const getOrdersByVendor = async (vendorId) => {
+  return await Order.find({ 'items.vendor_id': vendorId })
+    .populate('user_id', 'name email')
+    .populate('items.product_id', 'title image_url price')
+    .sort({ createdAt: -1 });
+};
+
+export const updateOrderStatus = async (id, status) => {
+  return await Order.findByIdAndUpdate(id, { status }, { new: true });
+};
+
+export default Order;

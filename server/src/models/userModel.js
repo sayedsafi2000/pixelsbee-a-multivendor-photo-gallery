@@ -1,62 +1,168 @@
-import pool from '../config/db.js';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
 
+// User Schema
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    lowercase: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
+  role: {
+    type: String,
+    enum: ['user', 'vendor', 'admin'],
+    default: 'user'
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'approved', 'blocked'],
+    default: 'pending'
+  },
+  previous_status: {
+    type: String,
+    enum: ['pending', 'approved', 'blocked'],
+    default: null
+  },
+  profile_pic_url: {
+    type: String,
+    default: null
+  }
+}, {
+  timestamps: true
+});
+
+// Hash password before saving
+userSchema.pre('save', async function(next) {
+  if (!this.isModified('password')) return next();
+  
+  try {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Method to compare password
+userSchema.methods.comparePassword = async function(candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
+};
+
+const User = mongoose.model('User', userSchema);
+
+// Platform stats for admin dashboard
+export const getPlatformStats = async () => {
+  try {
+    // Get total users count
+    const totalUsers = await User.countDocuments({ role: 'user' });
+    
+    // Get total vendors count
+    const totalVendors = await User.countDocuments({ role: 'vendor' });
+    
+    // Get total products count
+    const totalProducts = await mongoose.model('Product').countDocuments({ status: 'active' });
+    
+    // Get total revenue (placeholder for now)
+    const totalRevenue = 0;
+    
+    return {
+      totalUsers,
+      totalVendors,
+      totalProducts,
+      totalRevenue
+    };
+  } catch (error) {
+    console.error('Error getting platform stats:', error);
+    return {
+      totalUsers: 0,
+      totalVendors: 0,
+      totalProducts: 0,
+      totalRevenue: 0
+    };
+  }
+};
+
+// User Model Functions
 export const findUserByEmail = async (email) => {
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-  return rows[0];
+  return await User.findOne({ email });
 };
 
 export const createUser = async (user) => {
-  const { name, email, password, role, profile_pic_url } = user;
-  const [result] = await pool.query(
-    'INSERT INTO users (name, email, password, role, profile_pic_url) VALUES (?, ?, ?, ?, ?)',
-    [name, email, password, role || 'user', profile_pic_url || null]
-  );
-  return { id: result.insertId, ...user };
+  const newUser = new User(user);
+  return await newUser.save();
 };
 
 export const getUserById = async (id) => {
-  const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
-  return rows[0];
+  return await User.findById(id);
 };
 
 export const updateUserStatus = async (id, status) => {
-  await pool.query('UPDATE users SET status = ? WHERE id = ?', [status, id]);
+  const user = await User.findById(id);
+  if (!user) return null;
+  
+  // Store the current status as previous_status before updating
+  const updateData = {
+    status,
+    previous_status: user.status
+  };
+  
+  return await User.findByIdAndUpdate(id, updateData, { new: true });
+};
+
+export const restoreUserStatus = async (id) => {
+  const user = await User.findById(id);
+  if (!user) return null;
+  
+  // Restore to previous status, or default to 'pending' if no previous status
+  const newStatus = user.previous_status || 'pending';
+  
+  return await User.findByIdAndUpdate(id, { 
+    status: newStatus,
+    previous_status: null // Clear previous status after restoration
+  }, { new: true });
 };
 
 export const listVendors = async () => {
-  const [rows] = await pool.query("SELECT * FROM users WHERE role = 'vendor' ORDER BY created_at DESC");
-  return rows;
+  return await User.find({ role: 'vendor' }).sort({ createdAt: -1 });
 };
 
 export const getAllUsers = async () => {
-  const [rows] = await pool.query("SELECT * FROM users ORDER BY created_at DESC");
-  return rows;
+  return await User.find().sort({ createdAt: -1 });
 };
 
 export const getUserStats = async (userId) => {
   try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return {
+        downloads: 0,
+        favorites: 0,
+        memberSince: 'Unknown'
+      };
+    }
+
     // Get download count
-    const [downloadCount] = await pool.query(
-      'SELECT COUNT(*) as total_downloads FROM user_downloads WHERE user_id = ?',
-      [userId]
-    );
+    const downloadCount = await mongoose.model('UserDownload').countDocuments({ user_id: userId });
 
     // Get favorites count
-    const [favoritesCount] = await pool.query(
-      'SELECT COUNT(*) as total_favorites FROM user_favorites WHERE user_id = ?',
-      [userId]
-    );
-
-    // Get member since date
-    const [userInfo] = await pool.query(
-      'SELECT created_at FROM users WHERE id = ?',
-      [userId]
-    );
+    const favoritesCount = await mongoose.model('UserFavorite').countDocuments({ user_id: userId });
 
     return {
-      downloads: downloadCount[0].total_downloads,
-      favorites: favoritesCount[0].total_favorites,
-      memberSince: userInfo[0]?.created_at ? new Date(userInfo[0].created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long' }) : 'Unknown'
+      downloads: downloadCount,
+      favorites: favoritesCount,
+      memberSince: user.createdAt ? new Date(user.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long' }) : 'Unknown'
     };
   } catch (error) {
     console.error('Error getting user stats:', error);
@@ -71,13 +177,10 @@ export const getUserStats = async (userId) => {
 // Favorites functions
 export const getUserFavorites = async (userId) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT * FROM user_favorites WHERE user_id = ? ORDER BY created_at DESC',
-      [userId]
-    );
-    return rows.map(row => ({
-      ...row,
-      image_data: row.image_data ? JSON.parse(row.image_data) : null
+    const favorites = await mongoose.model('UserFavorite').find({ user_id: userId }).sort({ createdAt: -1 });
+    return favorites.map(fav => ({
+      ...fav.toObject(),
+      image_data: fav.image_data || null
     }));
   } catch (error) {
     console.error('Error fetching user favorites:', error);
@@ -87,19 +190,22 @@ export const getUserFavorites = async (userId) => {
 
 export const addToFavorites = async (userId, imageId, imageData) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT * FROM user_favorites WHERE user_id = ? AND image_id = ?',
-      [userId, imageId]
-    );
+    const existingFavorite = await mongoose.model('UserFavorite').findOne({ 
+      user_id: userId, 
+      image_id: imageId 
+    });
     
-    if (rows.length > 0) {
+    if (existingFavorite) {
       return; // Already favorited
     }
     
-    await pool.query(
-      'INSERT INTO user_favorites (user_id, image_id, image_data) VALUES (?, ?, ?)',
-      [userId, imageId, JSON.stringify(imageData)]
-    );
+    const newFavorite = new mongoose.model('UserFavorite')({
+      user_id: userId,
+      image_id: imageId,
+      image_data: imageData
+    });
+    
+    return await newFavorite.save();
   } catch (error) {
     console.error('Error adding to favorites:', error);
     throw error;
@@ -108,39 +214,23 @@ export const addToFavorites = async (userId, imageId, imageData) => {
 
 export const removeFromFavorites = async (userId, imageId) => {
   try {
-    await pool.query(
-      'DELETE FROM user_favorites WHERE user_id = ? AND image_id = ?',
-      [userId, imageId]
-    );
+    return await mongoose.model('UserFavorite').findOneAndDelete({ 
+      user_id: userId, 
+      image_id: imageId 
+    });
   } catch (error) {
     console.error('Error removing from favorites:', error);
     throw error;
   }
 };
 
-export const isFavorite = async (userId, imageId) => {
-  try {
-    const [rows] = await pool.query(
-      'SELECT * FROM user_favorites WHERE user_id = ? AND image_id = ?',
-      [userId, imageId]
-    );
-    return rows.length > 0;
-  } catch (error) {
-    console.error('Error checking favorite:', error);
-    return false;
-  }
-};
-
 // Downloads functions
 export const getUserDownloads = async (userId) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT * FROM user_downloads WHERE user_id = ? ORDER BY downloaded_at DESC',
-      [userId]
-    );
-    return rows.map(row => ({
-      ...row,
-      image_data: row.image_data ? JSON.parse(row.image_data) : null
+    const downloads = await mongoose.model('UserDownload').find({ user_id: userId }).sort({ downloaded_at: -1 });
+    return downloads.map(download => ({
+      ...download.toObject(),
+      image_data: download.image_data || null
     }));
   } catch (error) {
     console.error('Error fetching user downloads:', error);
@@ -150,161 +240,103 @@ export const getUserDownloads = async (userId) => {
 
 export const addToDownloads = async (userId, imageId, imageData) => {
   try {
-    const [rows] = await pool.query(
-      'SELECT * FROM user_downloads WHERE user_id = ? AND image_id = ?',
-      [userId, imageId]
-    );
+    const existingDownload = await mongoose.model('UserDownload').findOne({ 
+      user_id: userId, 
+      image_id: imageId 
+    });
     
-    if (rows.length > 0) {
-      // Update existing download timestamp
-      await pool.query(
-        'UPDATE user_downloads SET downloaded_at = NOW() WHERE user_id = ? AND image_id = ?',
-        [userId, imageId]
-      );
-    } else {
-      // Add new download
-      await pool.query(
-        'INSERT INTO user_downloads (user_id, image_id, image_data) VALUES (?, ?, ?)',
-        [userId, imageId, JSON.stringify(imageData)]
-      );
+    if (existingDownload) {
+      return; // Already downloaded
     }
+    
+    const newDownload = new mongoose.model('UserDownload')({
+      user_id: userId,
+      image_id: imageId,
+      image_data: imageData
+    });
+    
+    return await newDownload.save();
   } catch (error) {
     console.error('Error adding to downloads:', error);
     throw error;
   }
 };
 
-// Vendor stats functions
-export const getVendorStats = async (vendorId) => {
-  try {
-    // Get product count
-    const [productCount] = await pool.query(
-      'SELECT COUNT(*) as total_products FROM products WHERE vendor_id = ? AND status = "active"',
-      [vendorId]
-    );
-
-    // Get total downloads (sales)
-    const [downloadCount] = await pool.query(
-      'SELECT COUNT(*) as total_downloads FROM user_downloads ud JOIN products p ON ud.image_id = p.id WHERE p.vendor_id = ?',
-      [vendorId]
-    );
-
-    // Get average rating (mock for now - you can add rating system later)
-    const [ratingResult] = await pool.query(
-      'SELECT AVG(4.5) as avg_rating FROM products WHERE vendor_id = ? AND status = "active"',
-      [vendorId]
-    );
-
-    // Get total earnings (mock for now - you can add payment system later)
-    const [earningsResult] = await pool.query(
-      'SELECT COUNT(*) * 2.99 as total_earnings FROM user_downloads ud JOIN products p ON ud.image_id = p.id WHERE p.vendor_id = ?',
-      [vendorId]
-    );
-
-    // Get member since date
-    const [userInfo] = await pool.query(
-      'SELECT created_at FROM users WHERE id = ?',
-      [vendorId]
-    );
-
-    return {
-      products: productCount[0].total_products,
-      sales: downloadCount[0].total_downloads,
-      rating: ratingResult[0].avg_rating || 4.5,
-      earnings: earningsResult[0].total_earnings || 0,
-      memberSince: userInfo[0]?.created_at ? new Date(userInfo[0].created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long' }) : 'Unknown'
-    };
-  } catch (error) {
-    console.error('Error getting vendor stats:', error);
-    return {
-      products: 0,
-      sales: 0,
-      rating: 4.5,
-      earnings: 0,
-      memberSince: 'Unknown'
-    };
-  }
-};
-
-// Admin platform stats functions
-export const getPlatformStats = async () => {
-  try {
-    // Get total users
-    const [userCount] = await pool.query(
-      'SELECT COUNT(*) as total_users FROM users WHERE role = "user"'
-    );
-
-    // Get total vendors
-    const [vendorCount] = await pool.query(
-      'SELECT COUNT(*) as total_vendors FROM users WHERE role = "vendor"'
-    );
-
-    // Get total products
-    const [productCount] = await pool.query(
-      'SELECT COUNT(*) as total_products FROM products WHERE status = "active"'
-    );
-
-    // Get total revenue (mock for now)
-    const [revenueResult] = await pool.query(
-      'SELECT COUNT(*) * 2.99 as total_revenue FROM user_downloads'
-    );
-
-    return {
-      totalUsers: userCount[0].total_users,
-      totalVendors: vendorCount[0].total_vendors,
-      totalProducts: productCount[0].total_products,
-      totalRevenue: revenueResult[0].total_revenue || 0
-    };
-  } catch (error) {
-    console.error('Error getting platform stats:', error);
-    return {
-      totalUsers: 0,
-      totalVendors: 0,
-      totalProducts: 0,
-      totalRevenue: 0
-    };
-  }
-}; 
-
 // Cart functions
-export const getCart = async (userId) => {
-  const [rows] = await pool.query(
-    `SELECT uc.product_id, uc.quantity, p.title, p.price, p.image_url, p.vendor_id FROM user_carts uc
-     JOIN products p ON uc.product_id = p.id WHERE uc.user_id = ?`,
-    [userId]
-  );
-  return rows;
+export const getUserCart = async (userId) => {
+  try {
+    const cartItems = await mongoose.model('UserCart').find({ user_id: userId })
+      .populate('product_id')
+      .sort({ added_at: -1 });
+    return cartItems;
+  } catch (error) {
+    console.error('Error fetching user cart:', error);
+    return [];
+  }
 };
 
 export const addToCart = async (userId, productId, quantity = 1) => {
-  // If already in cart, update quantity
-  const [rows] = await pool.query(
-    'SELECT * FROM user_carts WHERE user_id = ? AND product_id = ?',
-    [userId, productId]
-  );
-  if (rows.length > 0) {
-    await pool.query(
-      'UPDATE user_carts SET quantity = quantity + ? WHERE user_id = ? AND product_id = ?',
-      [quantity, userId, productId]
-    );
-  } else {
-    await pool.query(
-      'INSERT INTO user_carts (user_id, product_id, quantity) VALUES (?, ?, ?)',
-      [userId, productId, quantity]
-    );
+  try {
+    const existingCartItem = await mongoose.model('UserCart').findOne({ 
+      user_id: userId, 
+      product_id: productId 
+    });
+    
+    if (existingCartItem) {
+      // Update quantity if already in cart
+      existingCartItem.quantity += quantity;
+      return await existingCartItem.save();
+    }
+    
+    const newCartItem = new mongoose.model('UserCart')({
+      user_id: userId,
+      product_id: productId,
+      quantity
+    });
+    
+    return await newCartItem.save();
+  } catch (error) {
+    console.error('Error adding to cart:', error);
+    throw error;
   }
 };
 
 export const removeFromCart = async (userId, productId) => {
-  await pool.query(
-    'DELETE FROM user_carts WHERE user_id = ? AND product_id = ?',
-    [userId, productId]
-  );
+  try {
+    return await mongoose.model('UserCart').findOneAndDelete({ 
+      user_id: userId, 
+      product_id: productId 
+    });
+  } catch (error) {
+    console.error('Error removing from cart:', error);
+    throw error;
+  }
+};
+
+export const updateCartQuantity = async (userId, productId, quantity) => {
+  try {
+    if (quantity <= 0) {
+      return await removeFromCart(userId, productId);
+    }
+    
+    return await mongoose.model('UserCart').findOneAndUpdate(
+      { user_id: userId, product_id: productId },
+      { quantity },
+      { new: true }
+    );
+  } catch (error) {
+    console.error('Error updating cart quantity:', error);
+    throw error;
+  }
 };
 
 export const clearCart = async (userId) => {
-  await pool.query(
-    'DELETE FROM user_carts WHERE user_id = ?',
-    [userId]
-  );
-}; 
+  try {
+    return await mongoose.model('UserCart').deleteMany({ user_id: userId });
+  } catch (error) {
+    console.error('Error clearing cart:', error);
+    throw error;
+  }
+};
+
+export default User; 

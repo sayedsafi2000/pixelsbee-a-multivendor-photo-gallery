@@ -17,7 +17,8 @@
   "keywords": [
     "nextjs",
     "nodejs",
-    "mysql",
+    "mongodb",
+    "mongoose",
     "image-sharing",
     "fullstack"
   ],
